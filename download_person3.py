@@ -1,15 +1,14 @@
 """
-VGGSound animal clips downloader — v3.
+VGGSound downloader — Person 3.
+
+Classes: chicken clucking, duck quacking, sheep bleating, donkey ass braying
 
 Pipeline:
   IMAGE : extract 5 frames evenly → batch CLIP → best frame → JPEG
   AUDIO : find 2 RMS peaks → CLAP score each 1.71s window → best → WAV
 
-Output: <out_dir>/<split>/<class>/<ytid>_<start>.wav + .jpg
-
 Usage:
   python download_person3.py --out_dir data/raw --workers 8
-  python download_person3.py --out_dir data/raw --max_per_class 1000
 """
 
 import argparse
@@ -54,13 +53,10 @@ except Exception:
 
 # ── Classes cibles ────────────────────────────────────────────────────────────
 TARGET_CLASSES = {
-    "dog barking",
-    "eagle screaming",
-    "horse neighing",
-    "lions roaring",
-    "penguin braying",
-    "pig oinking",
-    "woodpecker pecking tree",
+    "chicken clucking",
+    "duck quacking",
+    "sheep bleating",
+    "donkey, ass braying",
 }
 
 CLIP_THRESHOLD  = 0.20
@@ -81,7 +77,7 @@ def stem(ytid: str, start: int) -> str:
     return f"{ytid}_{start:06d}"
 
 
-def extract_frames(tmp_mp4: Path, tmp: Path, n: int = 20) -> list[tuple[float, Path]]:
+def extract_frames(tmp_mp4: Path, tmp: Path, n: int = 5) -> list[tuple[float, Path]]:
     step = 10.0 / n
     result = []
     for i in range(n):
@@ -112,8 +108,9 @@ def best_frame_clip(frames: list[tuple[float, Path]], cls: str) -> tuple[Path, f
         txt_feat  /= txt_feat.norm(dim=-1, keepdim=True)
         scores = (img_feats @ txt_feat.T).squeeze()
 
-    best_idx = int(scores.argmax())
-    return frames[best_idx][1], float(scores[best_idx])
+    best_idx = int(scores.argmax()) if scores.dim() > 0 else 0
+    score = float(scores[best_idx]) if scores.dim() > 0 else float(scores)
+    return frames[best_idx][1], score
 
 
 def find_top_peaks(wav_path: Path, n: int = 5, duration: float = 1.71, window_ms: int = 50) -> list[float]:
@@ -163,9 +160,15 @@ def best_audio_clap(tmp_mp4: Path, peaks: list[float], cls: str, tmp: Path) -> t
     try:
         with _model_lock:
             scores = _clap.compute_similarity([str(p) for p in wav_paths], [cls])
+        if hasattr(scores, "numpy"):
+            scores = scores.numpy()
+        scores = np.array(scores)
+        if scores.ndim == 1:
+            scores = scores[:, None]
         best_idx = int(np.argmax(scores[:, 0]))
         return wav_paths[best_idx], float(scores[best_idx, 0])
-    except Exception:
+    except Exception as e:
+        log.warning(f"CLAP error: {e}")
         return wav_paths[0], 0.0
 
 

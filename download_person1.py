@@ -1,15 +1,14 @@
 """
-VGGSound animal clips downloader — v3.
+VGGSound downloader — Person 1.
+
+Classes: lions roaring, horse neighing, pig oinking, cow lowing
 
 Pipeline:
   IMAGE : extract 5 frames evenly → batch CLIP → best frame → JPEG
   AUDIO : find 2 RMS peaks → CLAP score each 1.71s window → best → WAV
 
-Output: <out_dir>/<split>/<class>/<ytid>_<start>.wav + .jpg
-
 Usage:
   python download_person1.py --out_dir data/raw --workers 8
-  python download_person1.py --out_dir data/raw --max_per_class 1000
 """
 
 import argparse
@@ -24,12 +23,11 @@ import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import numpy as np
+from PIL import Image
 from tqdm import tqdm
 
 _model_lock = threading.Lock()
-
-import numpy as np
-from PIL import Image
 
 try:
     import imageio_ffmpeg
@@ -52,22 +50,18 @@ try:
 except Exception:
     CLAP_AVAILABLE = False
 
-# ── Classes cibles ────────────────────────────────────────────────────────────
 TARGET_CLASSES = {
-    "bee, wasp, etc. buzzing",
-    "cricket chirping",
-    "duck quacking",
-    "elephant trumpeting",
-    "elk bugling",
-    "frog croaking",
-    "snake hissing",
+    "lions roaring",
+    "horse neighing",
+    "pig oinking",
+    "cow lowing",
 }
 
-CLIP_THRESHOLD  = 0.20
-CLAP_THRESHOLD  = 0.20
-N_FRAMES        = 5
-N_PEAKS         = 2
-AUDIO_DURATION  = 1.71
+CLIP_THRESHOLD = 0.20
+CLAP_THRESHOLD = 0.20
+N_FRAMES       = 5
+N_PEAKS        = 2
+AUDIO_DURATION = 1.71
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,7 +75,7 @@ def stem(ytid: str, start: int) -> str:
     return f"{ytid}_{start:06d}"
 
 
-def extract_frames(tmp_mp4: Path, tmp: Path, n: int = 20) -> list[tuple[float, Path]]:
+def extract_frames(tmp_mp4: Path, tmp: Path, n: int = 5) -> list[tuple[float, Path]]:
     step = 10.0 / n
     result = []
     for i in range(n):
@@ -112,11 +106,12 @@ def best_frame_clip(frames: list[tuple[float, Path]], cls: str) -> tuple[Path, f
         txt_feat  /= txt_feat.norm(dim=-1, keepdim=True)
         scores = (img_feats @ txt_feat.T).squeeze()
 
-    best_idx = int(scores.argmax())
-    return frames[best_idx][1], float(scores[best_idx])
+    best_idx = int(scores.argmax()) if scores.dim() > 0 else 0
+    score = float(scores[best_idx]) if scores.dim() > 0 else float(scores)
+    return frames[best_idx][1], score
 
 
-def find_top_peaks(wav_path: Path, n: int = 5, duration: float = 1.71, window_ms: int = 50) -> list[float]:
+def find_top_peaks(wav_path: Path, n: int = 2, duration: float = 1.71, window_ms: int = 50) -> list[float]:
     with wave.open(str(wav_path)) as w:
         sr  = w.getframerate()
         raw = w.readframes(w.getnframes())
@@ -132,8 +127,8 @@ def find_top_peaks(wav_path: Path, n: int = 5, duration: float = 1.71, window_ms
     for _ in range(n):
         if rms_work.max() == 0:
             break
-        idx      = int(np.argmax(rms_work))
-        peak_sec = idx * window_ms / 1000
+        idx       = int(np.argmax(rms_work))
+        peak_sec  = idx * window_ms / 1000
         win_start = max(0.0, min(peak_sec - duration / 2, clip_dur - duration))
         peaks.append(win_start)
         rms_work[max(0, idx-min_sep): min(len(rms_work), idx+min_sep)] = 0
@@ -156,16 +151,21 @@ def best_audio_clap(tmp_mp4: Path, peaks: list[float], cls: str, tmp: Path) -> t
 
     if not wav_paths:
         return None, 0.0
-
     if not CLAP_AVAILABLE:
         return wav_paths[0], 0.0
 
     try:
         with _model_lock:
             scores = _clap.compute_similarity([str(p) for p in wav_paths], [cls])
+        if hasattr(scores, "numpy"):
+            scores = scores.numpy()
+        scores = np.array(scores)
+        if scores.ndim == 1:
+            scores = scores[:, None]
         best_idx = int(np.argmax(scores[:, 0]))
         return wav_paths[best_idx], float(scores[best_idx, 0])
-    except Exception:
+    except Exception as e:
+        log.warning(f"CLAP error: {e}")
         return wav_paths[0], 0.0
 
 
@@ -187,6 +187,7 @@ def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) ->
         raw_video = tmp / "raw.%(ext)s"
         full_wav  = tmp / "full.wav"
 
+        # 1. Download
         r = subprocess.run([
             "yt-dlp", "--quiet", "--no-warnings",
             "--format", "best[ext=mp4][acodec!=none]/best[acodec!=none]",
@@ -200,6 +201,7 @@ def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) ->
             return f"FAIL_DL {s}: no file"
         raw_file = raw_files[0]
 
+        # 2. Cut 10s
         tmp_mp4 = tmp / f"{s}.mp4"
         r = subprocess.run([
             FFMPEG, "-y", "-loglevel", "error",
@@ -210,6 +212,7 @@ def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) ->
         if r.returncode != 0:
             return f"FAIL_CUT {s}: {r.stderr.strip()[:120]}"
 
+        # 3. Full 10s WAV
         r = subprocess.run([
             FFMPEG, "-y", "-loglevel", "error",
             "-i", str(tmp_mp4), "-vn", "-ar", "24000", "-ac", "1", "-sample_fmt", "s16",
@@ -218,6 +221,7 @@ def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) ->
         if r.returncode != 0:
             return f"FAIL_WAV_FULL {s}: {r.stderr.strip()[:120]}"
 
+        # 4. IMAGE: 5 frames → batch CLIP → best
         frames = extract_frames(tmp_mp4, tmp, n=N_FRAMES)
         if not frames:
             return f"FAIL_FRAMES {s}"
@@ -228,6 +232,7 @@ def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) ->
 
         shutil.copy(best_jpg, jpg_out)
 
+        # 5. AUDIO: 2 RMS peaks → CLAP → best 1.71s
         peaks = find_top_peaks(full_wav, n=N_PEAKS)
         if not peaks:
             jpg_out.unlink(missing_ok=True)
