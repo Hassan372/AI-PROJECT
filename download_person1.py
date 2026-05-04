@@ -166,7 +166,7 @@ def best_audio_clap(tmp_mp4: Path, peaks: list[float], cls: str, tmp: Path) -> t
         return wav_paths[best_idx], float(scores[best_idx, 0])
     except Exception as e:
         log.warning(f"CLAP error: {e}")
-        return wav_paths[0], 0.0
+        return wav_paths[0], None  # None = CLAP failed, bypass threshold
 
 
 def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) -> str:
@@ -243,13 +243,14 @@ def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) ->
             jpg_out.unlink(missing_ok=True)
             return f"FAIL_AUDIO {s}"
 
-        if CLAP_AVAILABLE and clap_score < CLAP_THRESHOLD:
+        if CLAP_AVAILABLE and clap_score is not None and clap_score < CLAP_THRESHOLD:
             jpg_out.unlink(missing_ok=True)
             return f"FAIL_CLAP {s}: clap={clap_score:.3f}"
 
         shutil.copy(best_wav, wav_out)
 
-    return f"OK {s} | clip={clip_score:.3f} clap={clap_score:.3f}"
+    clap_str = f"{clap_score:.3f}" if clap_score is not None else "err"
+    return f"OK {s} | clip={clip_score:.3f} clap={clap_str}"
 
 
 def parse_args():
