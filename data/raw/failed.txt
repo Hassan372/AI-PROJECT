@@ -1,0 +1,2 @@
+FAIL_DL -HLTp7gPBEw_000030: ERROR: [youtube] -HLTp7gPBEw: Private video. Sign in if you've been granted access to this video. Use --cookies-from-bro
+FAIL_DL -YIYb7I1RRI_000004: ERROR: [youtube] -YIYb7I1RRI: Video unavailable
