@@ -2,14 +2,14 @@
 VGGSound animal clips downloader — v3.
 
 Pipeline:
-  IMAGE : extract 20 frames evenly → batch CLIP → best frame → JPEG
-  AUDIO : find 5 RMS peaks → CLAP score each 1.71s window → best → WAV
+  IMAGE : extract 5 frames evenly → batch CLIP → best frame → JPEG
+  AUDIO : find 2 RMS peaks → CLAP score each 1.71s window → best → WAV
 
 Output: <out_dir>/<split>/<class>/<ytid>_<start>.wav + .jpg
 
 Usage:
-  python download_vggsound.py --out_dir data/raw --workers 4
-  python download_vggsound.py --out_dir data/raw --max_per_class 500
+  python download_person1.py --out_dir data/raw --workers 8
+  python download_person1.py --out_dir data/raw --max_per_class 1000
 """
 
 import argparse
@@ -19,9 +19,12 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+from tqdm import tqdm
 
 _model_lock = threading.Lock()
 
@@ -62,8 +65,8 @@ TARGET_CLASSES = {
 
 CLIP_THRESHOLD  = 0.20
 CLAP_THRESHOLD  = 0.20
-N_FRAMES        = 20
-N_PEAKS         = 5
+N_FRAMES        = 5
+N_PEAKS         = 2
 AUDIO_DURATION  = 1.71
 
 logging.basicConfig(
@@ -79,7 +82,6 @@ def stem(ytid: str, start: int) -> str:
 
 
 def extract_frames(tmp_mp4: Path, tmp: Path, n: int = 20) -> list[tuple[float, Path]]:
-    """Extract N frames evenly spaced over 10s. Returns [(timestamp, path), ...]."""
     step = 10.0 / n
     result = []
     for i in range(n):
@@ -96,7 +98,6 @@ def extract_frames(tmp_mp4: Path, tmp: Path, n: int = 20) -> list[tuple[float, P
 
 
 def best_frame_clip(frames: list[tuple[float, Path]], cls: str) -> tuple[Path, float]:
-    """Batch CLIP on all frames, return (best_path, best_score)."""
     if not frames:
         return None, 0.0
     if not CLIP_AVAILABLE:
@@ -116,7 +117,6 @@ def best_frame_clip(frames: list[tuple[float, Path]], cls: str) -> tuple[Path, f
 
 
 def find_top_peaks(wav_path: Path, n: int = 5, duration: float = 1.71, window_ms: int = 50) -> list[float]:
-    """Return win_start offsets for the top N RMS peaks (min-separation enforced)."""
     with wave.open(str(wav_path)) as w:
         sr  = w.getframerate()
         raw = w.readframes(w.getnframes())
@@ -142,7 +142,6 @@ def find_top_peaks(wav_path: Path, n: int = 5, duration: float = 1.71, window_ms
 
 
 def best_audio_clap(tmp_mp4: Path, peaks: list[float], cls: str, tmp: Path) -> tuple[Path, float]:
-    """Extract 1.71s WAV for each peak, CLAP score, return (best_path, best_score)."""
     wav_paths = []
     for i, win_start in enumerate(peaks):
         wp = tmp / f"audio_{i}.wav"
@@ -188,7 +187,6 @@ def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) ->
         raw_video = tmp / "raw.%(ext)s"
         full_wav  = tmp / "full.wav"
 
-        # ── 1. Download ───────────────────────────────────────────────────────
         r = subprocess.run([
             "yt-dlp", "--quiet", "--no-warnings",
             "--format", "best[ext=mp4][acodec!=none]/best[acodec!=none]",
@@ -202,7 +200,6 @@ def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) ->
             return f"FAIL_DL {s}: no file"
         raw_file = raw_files[0]
 
-        # ── 2. Cut 10s ────────────────────────────────────────────────────────
         tmp_mp4 = tmp / f"{s}.mp4"
         r = subprocess.run([
             FFMPEG, "-y", "-loglevel", "error",
@@ -213,7 +210,6 @@ def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) ->
         if r.returncode != 0:
             return f"FAIL_CUT {s}: {r.stderr.strip()[:120]}"
 
-        # ── 3. Full 10s WAV ───────────────────────────────────────────────────
         r = subprocess.run([
             FFMPEG, "-y", "-loglevel", "error",
             "-i", str(tmp_mp4), "-vn", "-ar", "24000", "-ac", "1", "-sample_fmt", "s16",
@@ -222,7 +218,6 @@ def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) ->
         if r.returncode != 0:
             return f"FAIL_WAV_FULL {s}: {r.stderr.strip()[:120]}"
 
-        # ── 4. IMAGE: 20 frames → batch CLIP → best ───────────────────────────
         frames = extract_frames(tmp_mp4, tmp, n=N_FRAMES)
         if not frames:
             return f"FAIL_FRAMES {s}"
@@ -233,7 +228,6 @@ def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) ->
 
         shutil.copy(best_jpg, jpg_out)
 
-        # ── 5. AUDIO: 5 RMS peaks → CLAP → best 1.71s ────────────────────────
         peaks = find_top_peaks(full_wav, n=N_PEAKS)
         if not peaks:
             jpg_out.unlink(missing_ok=True)
@@ -258,7 +252,7 @@ def parse_args():
     p.add_argument("--csv",           default="VGGSound/data/vggsound.csv")
     p.add_argument("--out_dir",       default="data/raw")
     p.add_argument("--split",         default="train", choices=["train", "test", "all"])
-    p.add_argument("--workers",       type=int, default=4)
+    p.add_argument("--workers",       type=int, default=8)
     p.add_argument("--max_per_class", type=int, default=1000)
     return p.parse_args()
 
@@ -291,26 +285,32 @@ def main():
 
     ok = skip = fail = 0
     failed_log = out_dir / "failed.txt"
+    start_time = time.time()
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
             pool.submit(download_clip, ytid, start, cls, split, out_dir): (ytid, start)
             for ytid, start, cls, split in jobs
         }
-        for future in as_completed(futures):
-            msg = future.result()
-            if msg.startswith("OK"):
-                ok += 1
-                log.info(msg)
-            elif msg.startswith("SKIP"):
-                skip += 1
-            else:
-                fail += 1
-                log.warning(msg)
-                with open(failed_log, "a") as fh:
-                    fh.write(msg + "\n")
+        with tqdm(total=len(jobs), desc="Downloading", unit="clip",
+                  bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
+            for future in as_completed(futures):
+                msg = future.result()
+                if msg.startswith("OK"):
+                    ok += 1
+                    log.info(msg)
+                elif msg.startswith("SKIP"):
+                    skip += 1
+                else:
+                    fail += 1
+                    log.warning(msg)
+                    with open(failed_log, "a") as fh:
+                        fh.write(msg + "\n")
+                pbar.set_postfix(ok=ok, skip=skip, fail=fail)
+                pbar.update(1)
 
-    log.info(f"Done — OK:{ok}  SKIP:{skip}  FAIL:{fail}")
+    elapsed = time.time() - start_time
+    log.info(f"Done — OK:{ok}  SKIP:{skip}  FAIL:{fail}  Time:{elapsed/60:.1f}min")
 
 
 if __name__ == "__main__":
