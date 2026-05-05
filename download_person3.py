@@ -61,8 +61,8 @@ TARGET_CLASSES = {
 
 CLIP_THRESHOLD  = 0.20
 CLAP_THRESHOLD  = 0.20
-N_FRAMES        = 5
-N_PEAKS         = 2
+N_FRAMES        = 20
+N_PEAKS         = 5
 AUDIO_DURATION  = 1.71
 
 logging.basicConfig(
