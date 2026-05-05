@@ -159,10 +159,10 @@ def best_audio_clap(tmp_mp4: Path, peaks: list[float], cls: str, tmp: Path) -> t
 
     try:
         with _model_lock:
-            scores = _clap.compute_similarity([str(p) for p in wav_paths], [cls])
-        if hasattr(scores, "numpy"):
-            scores = scores.numpy()
-        scores = np.array(scores)
+            audio_emb = _clap.get_audio_embeddings([str(p) for p in wav_paths])
+            text_emb = _clap.get_text_embeddings([cls])
+            scores = _clap.compute_similarity(audio_emb, text_emb)
+        scores = scores.detach().cpu().numpy()
         if scores.ndim == 1:
             scores = scores[:, None]
         best_idx = int(np.argmax(scores[:, 0]))
