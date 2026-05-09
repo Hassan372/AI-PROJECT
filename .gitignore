@@ -5,3 +5,11 @@ __pycache__/
 .DS_Store
 Thumbs.db
 data/
+venv311/
+*.egg-info/
+.eggs/
+dist/
+build/
+*.log
+*.bat
+

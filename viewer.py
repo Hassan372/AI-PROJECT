@@ -62,7 +62,8 @@ def clap_score(wav: Path, cls: str) -> float:
         te = _clap.get_text_embeddings([cls])
         s  = _clap.compute_similarity(ae, te)
         return float(s.detach().cpu().numpy()[0, 0])
-    except Exception:
+    except Exception as e:
+        print(f"CLAP error: {e}")
         return float("nan")
 
 

@@ -8,7 +8,7 @@ Pipeline:
   AUDIO : find 2 RMS peaks → CLAP score each 1.71s window → best → WAV
 
 Usage:
-  python download_person1.py --out_dir data/raw --workers 8
+  python download_person1.py --out_dir data --workers 8
 """
 
 import argparse
@@ -58,7 +58,7 @@ TARGET_CLASSES = {
 }
 
 CLIP_THRESHOLD = 0.20
-CLAP_THRESHOLD = 0.20
+CLAP_THRESHOLD = 1
 N_FRAMES       = 20
 N_PEAKS        = 5
 AUDIO_DURATION = 1.71
@@ -230,6 +230,7 @@ def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) ->
         if CLIP_AVAILABLE and clip_score < CLIP_THRESHOLD:
             return f"FAIL_CLIP {s}: clip={clip_score:.3f}"
 
+        jpg_out.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(best_jpg, jpg_out)
 
         # 5. AUDIO: 2 RMS peaks → CLAP → best 1.71s
@@ -256,7 +257,7 @@ def download_clip(ytid: str, start: int, cls: str, split: str, out_dir: Path) ->
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--csv",           default="VGGSound/data/vggsound.csv")
-    p.add_argument("--out_dir",       default="data/raw")
+    p.add_argument("--out_dir",       default="data")
     p.add_argument("--split",         default="train", choices=["train", "test", "all"])
     p.add_argument("--workers",       type=int, default=8)
     p.add_argument("--max_per_class", type=int, default=1000)
